@@ -24,14 +24,19 @@ python3 -m venv .venv
 ```sh
 .venv/bin/python download.py --dry-run       # plan only: songs per playlist, duplicates, final size
 caffeinate -i .venv/bin/python download.py   # download; caffeinate (macOS) keeps the Mac awake
+
+# best quality: 320 kbps MP3s, library capped at 10 GB
+caffeinate -i .venv/bin/python download.py --bitrate 320 --max-gb 10
 ```
+
+All 868 songs need about 9.9 GB at 320 kbps and about 6 GB at the default 192 kbps (dry runs of 2026-11-13). YouTube's own audio is roughly 130 to 160 kbps Opus, so 320 kbps adds no detail; it only keeps the conversion to MP3 from losing any more.
 
 Options:
 
 - `--doc PATH`: playlist doc to read (default `playlists.md`)
 - `--out PATH`: library folder (default `library`)
 - `--max-gb N`: size limit in GB (default 10). Decimal GB as in Finder; hard-linked files count once.
-- `--bitrate KBPS`: MP3 bitrate, 128, 192 (default), 256 or 320. Only affects songs downloaded from then on.
+- `--bitrate KBPS`: MP3 bitrate, 128, 192 (default), 256 or 320 (best). Only affects songs downloaded from then on, so to redo the whole library at another bitrate, move `library/` aside first.
 - `--dry-run`: print the plan without downloading or creating anything.
 
 Runs are resumable. Stop with Ctrl+C whenever you like and run the same command again: songs already in the library are skipped and failed songs are retried. The downloader never deletes files.
@@ -61,7 +66,7 @@ library/
 └── .tmp/          partial downloads
 ```
 
-- File names are `<song> - <album>.mp3`, where the album is usually the movie, or `<song>.mp3` for music videos without an album. Names come from YouTube Music rather than the raw video titles, are cut to 70 characters and are safe for FAT and exFAT drives.
+- File names are `<song> - <album>.mp3`, where the album is usually the movie. The album is left out for music videos without one and for singles whose title already contains it. Names come from YouTube Music rather than the raw video titles, are cut to 70 characters and are safe for FAT and exFAT drives.
 - Each MP3 has title, artist, album, year, the YouTube link (as comment) and a square cover image.
 - A song that appears in several folders is stored once and hard-linked into each folder, so it takes no extra space. Copying the library to a phone or USB stick turns the links into real copies, so the copy is bigger than the library on the Mac.
 
@@ -70,12 +75,12 @@ library/
 1. Reads playlists.md into folders and playlist IDs.
 2. Fetches each playlist from YouTube Music with ytmusicapi, keeps the songs marked available and takes their title, artists and album from YouTube Music.
 3. Interleaves the folders (song 1 of every folder, then song 2, and so on), so that if the size limit is reached every folder still has its top songs.
-4. For each song: skips it if the folder already has it, hard-links it if another folder has it, otherwise estimates its size and stops if it would take the library past the limit. If it fits, yt-dlp downloads the best audio, converts it to MP3, adds the tags and cover, and the song is recorded in `library/.index.json`.
-5. Stops early after 10 failures in a row, which usually means YouTube is rate-limiting.
+4. For each song: skips it if the folder already has it, hard-links it if another folder has it, otherwise estimates its size and stops if it would take the library past the limit. If it fits, yt-dlp downloads the best audio, converts it to MP3, adds the tags and cover, and the song is recorded in `library/.index.json`. A failed download is retried once on a new YouTube session.
+5. Stops early after 10 failed songs in a row, which usually means YouTube is rate-limiting.
 
 ## Troubleshooting
 
-- `HTTP Error 403: Forbidden` on a song: usually a one-off. Run again; failed songs are retried.
+- `HTTP Error 403: Forbidden` on a song: the song is retried straight away on a new YouTube session (the "retrying" line), and again on the next run if that fails too.
 - The run stops with "Too many failures in a row": YouTube is rate-limiting. Wait a while, then run again.
 - Most songs fail after a YouTube change: update the libraries with `.venv/bin/pip install -U "yt-dlp[default]" ytmusicapi`.
 - Warnings about a missing JavaScript runtime: install Node.js 22+ or Deno (`brew install deno`) and make sure it is on `PATH`.

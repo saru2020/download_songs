@@ -31,6 +31,8 @@ TEMP_DIR = '.tmp'
 COVER_AND_TAGS_BYTES = 256 * 1024
 UNKNOWN_DURATION_S = 600
 MAX_FAILURES_IN_A_ROW = 10
+# Tamil script takes 3 bytes per character, this keeps names under the 255-byte limit
+MAX_NAME_CHARS = 70
 
 HEADING = re.compile(r'^##\s+(.+?)\s*$')
 PLAYLIST_ID = re.compile(r'[?&]list=([\w-]+)')
@@ -100,6 +102,13 @@ def estimate_bytes(track: dict, bitrate_kbps: int) -> int:
     return int(seconds * bitrate_kbps * 1000 / 8) + COVER_AND_TAGS_BYTES
 
 
+def file_stem(track: dict) -> str:
+    """'<title> - <album>', leaving the album out when the title already contains it (singles)."""
+    title, album = track['title'], track['album']
+    name = title if not album or album.lower() in title.lower() else f'{title} - {album}'
+    return name[:MAX_NAME_CHARS].rstrip(' -')
+
+
 def save_index(path: Path, index: dict[str, list[str]]) -> None:
     tmp = path.with_name(path.name + '.tmp')
     tmp.write_text(json.dumps(index, indent=1, ensure_ascii=False), encoding='utf-8')
@@ -112,9 +121,7 @@ def make_downloader(folder_dir: Path, temp_dir: Path, bitrate_kbps: int) -> Yout
         'quiet': True,
         'format': 'bestaudio/best',
         'paths': {'home': str(folder_dir), 'temp': str(temp_dir)},
-        'outtmpl': '%(meta_title)s%(meta_album& - {}|)s.%(ext)s',
-        # Tamil script takes 3 bytes per character, this keeps names under the 255-byte limit
-        'trim_file_name': 70,
+        'outtmpl': '%(file_stem)s.%(ext)s',
         'windowsfilenames': True,
         'final_ext': 'mp3',
         'writethumbnail': True,
@@ -141,7 +148,7 @@ def main() -> None:
     parser.add_argument('--out', type=Path, default=HERE / 'library', help='library folder (default: %(default)s)')
     parser.add_argument('--max-gb', type=float, default=10.0, help='library size limit in GB (default: %(default)s)')
     parser.add_argument('--bitrate', type=int, default=192, choices=(128, 192, 256, 320),
-                        help='MP3 bitrate in kbps (default: %(default)s)')
+                        help='MP3 bitrate in kbps, 320 is the highest quality (default: %(default)s)')
     parser.add_argument('--dry-run', action='store_true', help='show what would be downloaded, download nothing')
     args = parser.parse_args()
     if not args.dry_run and not shutil.which('ffmpeg'):
@@ -189,13 +196,23 @@ def main() -> None:
                 downloaded += 1
                 continue
 
-            if folder not in downloaders:
-                downloaders[folder] = stack.enter_context(make_downloader(out / folder, out / TEMP_DIR, args.bitrate))
-            # meta_* fields become the file name and ID3 tags in place of the raw video title
-            song = {'meta_title': track['title'], 'meta_artist': track['artist'], 'meta_album': track['album']}
-            try:
-                info = downloaders[folder].extract_info(f'https://www.youtube.com/watch?v={vid}', extra_info=song)
-            except DownloadError:
+            # meta_* fields replace the raw video title, uploader and album in the ID3 tags
+            song = {'file_stem': file_stem(track), 'meta_title': track['title'],
+                    'meta_artist': track['artist'], 'meta_album': track['album']}
+            info = None
+            for attempt in range(2):
+                if folder not in downloaders:
+                    downloaders[folder] = stack.enter_context(
+                        make_downloader(out / folder, out / TEMP_DIR, args.bitrate))
+                try:
+                    info = downloaders[folder].extract_info(f'https://www.youtube.com/watch?v={vid}', extra_info=song)
+                    break
+                except DownloadError:
+                    # a YouTube session can get stuck answering HTTP 403, so the retry gets a new one
+                    del downloaders[folder]
+                    if not attempt:
+                        print(f'[{n}/{len(queue)}] retrying {folder} / {track["title"]} on a new YouTube session')
+            if info is None:
                 failed += 1
                 failures_in_a_row += 1
                 print(f'[{n}/{len(queue)}] failed: {folder} / {track.get("title")}')
